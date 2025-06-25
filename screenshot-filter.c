@@ -28,7 +28,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 static bool write_data(const char *destination, uint8_t *data, size_t len,
 		       char *content_type, uint32_t width, uint32_t height,
 		       int destination_type);
-static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
+static bool put_data(const char *url, uint8_t *buf, size_t len, char *content_type,
 		     int width, int height);
 
 #define SETTING_DESTINATION_TYPE "destination_type"
@@ -578,7 +578,7 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 
 	int ret;
 	AVFrame *frame;
-	AVPacket pkt;
+	AVPacket *pkt;
 
 	if (image_data_ptr == NULL)
 		goto err_no_image_data;
@@ -613,36 +613,38 @@ static bool write_image(const char *destination, uint8_t *image_data_ptr,
 	if (ret < 0)
 		goto err_av_image_alloc;
 
-	av_init_packet(&pkt);
-	pkt.data = NULL;
-	pkt.size = 0;
+	//av_init_packet(&pkt);
+	pkt = av_packet_alloc();
+	
+	pkt->data = NULL;
+	pkt->size = 0;
 
-	for (int y = 0; y < height; ++y)
+	for (uint32_t y = 0; y < height; ++y)
 		memcpy(frame->data[0] + y * width * 4,
 		       image_data_ptr + y * image_data_linesize, width * 4);
 	frame->pts = 1;
 
 #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(57, 40, 101)
 	int got_output = 0;
-	ret = avcodec_encode_video2(codec_context, &pkt, frame, &got_output);
+	ret = avcodec_encode_video2(codec_context, pkt, frame, &got_output);
 	if (ret == 0 && got_output) {
-		success = write_data(destination, pkt.data, pkt.size,
+		success = write_data(destination, pkt->data, pkt->size,
 				     "image/png", width, height,
 				     destination_type);
-		av_free_packet(&pkt);
+		av_free_packet(pkt);
 	}
 #else
 	ret = avcodec_send_frame(codec_context, frame);
 	if (ret < 0)
 		goto err_av_image_alloc;
-	ret = avcodec_receive_packet(codec_context, &pkt);
+	ret = avcodec_receive_packet(codec_context, pkt);
 	if (ret < 0 || ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
 		goto err_av_image_alloc;
 	} else {
-		success = write_data(destination, pkt.data, pkt.size,
+		success = write_data(destination, pkt->data, pkt->size,
 				     "image/png", width, height,
 				     destination_type);
-		av_packet_unref(&pkt);
+		av_packet_unref(pkt);
 	}
 #endif
 
@@ -655,7 +657,7 @@ err_av_image_alloc:
 
 err_av_frame_alloc:
 	// Failed allocating frame
-	avcodec_close(codec_context);
+	avcodec_free_context(&codec_context);
 
 err_png_encoder_open:
 	// Failed opening PNG encoder
@@ -761,7 +763,7 @@ static bool write_data(const char *destination, uint8_t *data, size_t len,
 
 	return success;
 }
-static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
+static bool put_data(const char *url, uint8_t *buf, size_t len, char *content_type,
 		     int width, int height)
 {
 	bool success = false;
@@ -816,7 +818,7 @@ static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
 		goto err_internet_open;
 
 	HINTERNET hConn = InternetConnectA(hIntrn, host, port, NULL, NULL,
-					   INTERNET_SERVICE_HTTP, 0, NULL);
+					   INTERNET_SERVICE_HTTP, 0, (DWORD_PTR)NULL);
 	if (!hConn)
 		goto err_internet_connect;
 
@@ -826,7 +828,7 @@ static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
 				   INTERNET_FLAG_NO_UI | INTERNET_FLAG_RELOAD;
 
 	HINTERNET hReq = HttpOpenRequestA(hConn, "PUT", location, "HTTP/1.1",
-					  NULL, NULL, dwOpenRequestFlags, NULL);
+					  NULL, NULL, dwOpenRequestFlags, (DWORD_PTR)NULL);
 	if (!hReq)
 		goto err_http_open_request;
 
@@ -837,9 +839,9 @@ static bool put_data(char *url, uint8_t *buf, size_t len, char *content_type,
 		 width);
 	snprintf(header, sizeof(header), "%sImage-Height: %d\r\n", header,
 		 height);
-
-	if (HttpSendRequestA(hReq, header, strnlen(header, sizeof(header)), buf,
-			     len)) {
+	
+	if (HttpSendRequestA(hReq, header, (DWORD)strnlen(header, sizeof(header)), buf,
+			     (DWORD)len)) {
 		success = true;
 		info("Uploaded file to %s:%d%s", host, port, location);
 	} else {
